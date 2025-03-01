@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Snake Shootout</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #gameContainer {
+            display: flex;
+        }
+        canvas {
+            border: 1px solid black;
+        }
+        #eventLog {
+            width: 200px;
+            height: 400px;
+            overflow-y: scroll;
+            border: 1px solid black;
+            margin-left: 10px;
+            padding: 5px;
+            background-color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+        <div id="eventLog"></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gridSize = 20; // Each cell is 20x20 pixels
+        const width = 20; // 20 cells wide
+        const height = 20; // 20 cells tall
+        const tileSize = canvas.width / width;
+
+        // Game state
+        let grid = Array(height).fill().map(() => Array(width).fill(0)); // 0: empty, -1: food
+        let snakes = [];
+        let shots = [];
+        let foodCount = 20; // Increased food for more action
+        let gameState = 'selecting'; // 'selecting', 'playing'
+        let userFavorite = null;
+        let winnerAnnounced = false;
+        let lastLogicUpdateTime = 0;
+        const logicUpdateInterval = 200; // ms, slowed down by 50% from 100ms
+
+        // Colors for different snakes
+        const colors = ['blue', 'red', 'green', 'purple'];
+
+        // Directions: [dx, dy]
+        const directions = {
+            up: [0, -1],
+            down: [0, 1],
+            left: [-1, 0],
+            right: [1, 0]
+        };
+
+        // Event log element
+        const eventLog = document.getElementById('eventLog');
+
+        // Initialize the game
+        function init() {
+            snakes = [];
+            shots = [];
+            grid = Array(height).fill().map(() => Array(width).fill(0));
+            eventLog.innerHTML = ''; // Clear event log
+            gameState = 'selecting';
+            userFavorite = null;
+            winnerAnnounced = false;
+
+            // Create 4 snakes
+            for (let i = 0; i < 4; i++) {
+                let snake = spawnSnake(i + 1);
+                if (snake) snakes.push(snake);
+            }
+
+            // Spawn initial food
+            for (let i = 0; i < foodCount; i++) {
+                spawnFood();
+            }
+
+            // Render initial state
+            render();
+            logEvent("Click on a snake to select your favorite.");
+        }
+
+        // Spawn a snake with a unique ID
+        function spawnSnake(id) {
+            let attempts = 0;
+            const maxAttempts = 100;
+            while (attempts < maxAttempts) {
+                let x = Math.floor(Math.random() * (width - 3));
+                let y = Math.floor(Math.random() * height);
+                let direction = Object.values(directions)[Math.floor(Math.random() * 4)];
+                let positions = [
+                    [x, y],
+                    [x - direction[0], y - direction[1]],
+                    [x - 2 * direction[0], y - 2 * direction[1]]
+                ];
+
+                // Check if position is valid
+                if (isPositionValid(positions)) {
+                    return {
+                        id: id,
+                        positions: positions,
+                        direction: direction,
+                        alive: true,
+                        growth: 0,
+                        speed: 1.0,
+                        moveAccumulator: 0.0,
+                        color: colors[id - 1]
+                    };
+                }
+                attempts++;
+            }
+            return null; // Failed to spawn
+        }
+
+        // Check if positions are valid (within bounds and not overlapping)
+        function isPositionValid(positions) {
+            for (let [x, y] of positions) {
+                if (x < 0 || x >= width || y < 0 || y >= height) return false;
+                for (let snake of snakes) {
+                    for (let pos of snake.positions) {
+                        if (pos[0] === x && pos[1] === y) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Spawn food on an empty cell
+        function spawnFood() {
+            let x, y;
+            do {
+                x = Math.floor(Math.random() * width);
+                y = Math.floor(Math.random() * height);
+            } while (grid[y][x] !== 0 || snakes.some(s => s.positions.some(p => p[0] === x && p[1] === y)));
+            grid[y][x] = -1;
+        }
+
+        // Shrink snake by a given number of segments
+        function shrinkSnake(snake, amount) {
+            for (let i = 0; i < amount; i++) {
+                if (snake.positions.length > 1) {
+                    snake.positions.pop();
+                } else {
+                    snake.alive = false;
+                    logEvent(`Snake ${snake.id} has died.`);
+                    break;
+                }
+            }
+        }
+
+        // Game logic update function
+        function updateLogic() {
+            let previousAliveCount = snakes.filter(s => s.alive).length;
+
+            // Step 1: Snake actions
+            for (let snake of snakes) {
+                if (!snake.alive) continue;
+                let direction = decideDirection(snake);
+                snake.direction = direction;
+                snake.moveAccumulator += snake.speed;
+                while (snake.moveAccumulator >= 1.0) {
+                    moveSnake(snake);
+                    snake.moveAccumulator -= 1.0;
+                }
+                if (snakes.length > 1 && Math.random() < 0.2) { // 20% chance to shoot if more than one snake
+                    shots.push({
+                        position: [...snake.positions[0]],
+                        direction: [...direction]
+                    });
+                }
+            }
+
+            // Step 2: Move shots
+            for (let i = shots.length - 1; i >= 0; i--) {
+                let shot = shots[i];
+                shot.position[0] += shot.direction[0];
+                shot.position[1] += shot.direction[1];
+
+                if (shot.position[0] < 0 || shot.position[0] >= width || shot.position[1] < 0 || shot.position[1] >= height) {
+                    shots.splice(i, 1);
+                    continue;
+                }
+
+                // Check if shot hits a snake
+                for (let snake of snakes) {
+                    if (!snake.alive) continue;
+                    for (let pos of snake.positions) {
+                        if (pos[0] === shot.position[0] && pos[1] === shot.position[1]) {
+                            shrinkSnake(snake, 1);
+                            shots.splice(i, 1);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Step 3: Check for snake collisions
+            let collisions = new Set();
+            for (let i = 0; i < snakes.length; i++) {
+                for (let j = i + 1; j < snakes.length; j++) {
+                    let snakeA = snakes[i];
+                    let snakeB = snakes[j];
+                    if (!snakeA.alive || !snakeB.alive) continue;
+                    for (let posA of snakeA.positions) {
+                        for (let posB of snakeB.positions) {
+                            if (posA[0] === posB[0] && posA[1] === posB[1]) {
+                                collisions.add(snakeA);
+                                collisions.add(snakeB);
+                                logEvent(`Snake ${snakeA.id} and Snake ${snakeB.id} collided, both lost 2 segments.`);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            collisions.forEach(snake => shrinkSnake(snake, 2));
+
+            // Remove dead snakes
+            snakes = snakes.filter(s => s.alive && s.positions.length > 0);
+
+            // Check if only one snake remains
+            let currentAliveCount = snakes.filter(s => s.alive).length;
+            if (currentAliveCount === 1 && previousAliveCount > 1) {
+                let winner = snakes.find(s => s.alive);
+                let message = `Snake ${winner.id} is the winner!`;
+                if (winner.id === userFavorite) {
+                    message = "User wins!";
+                }
+                logEvent(message);
+            }
+
+            // Check if all snakes are dead
+            if (currentAliveCount === 0) {
+                init(); // Restart if all snakes die
+            }
+        }
+
+        // Move a snake
+        function moveSnake(snake) {
+            let head = snake.positions[0];
+            let newHead = [head[0] + snake.direction[0], head[1] + snake.direction[1]];
+
+            // Check for wall or self-collision
+            if (newHead[0] < 0 || newHead[0] >= width || newHead[1] < 0 || newHead[1] >= height ||
+                snake.positions.slice(1).some(p => p[0] === newHead[0] && p[1] === newHead[1])) {
+                shrinkSnake(snake, 1); // Lose 1 segment instead of dying
+                return;
+            }
+
+            snake.positions.unshift(newHead);
+
+            // Handle food consumption
+            if (grid[newHead[1]][newHead[0]] === -1) {
+                snake.growth += 5; // Grow by 5 segments
+                snake.speed *= 1.1; // Increase speed by 10%
+                grid[newHead[1]][newHead[0]] = 0;
+                spawnFood();
+            }
+
+            // Remove tail if no growth
+            if (snake.growth > 0) {
+                snake.growth--;
+            } else {
+                snake.positions.pop();
+            }
+        }
+
+        // AI decision function
+        function decideDirection(snake) {
+            let safeDirections = getSafeDirections(snake);
+            if (safeDirections.length === 0) {
+                return snake.direction;
+            }
+            return safeDirections[Math.floor(Math.random() * safeDirections.length)];
+        }
+
+        // Get safe directions for a snake
+        function getSafeDirections(snake) {
+            let possible = Object.values(directions);
+            let safe = [];
+            let head = snake.positions[0];
+            for (let dir of possible) {
+                let newX = head[0] + dir[0];
+                let newY = head[1] + dir[1];
+                if (newX < 0 || newX >= width || newY < 0 || newY >= height) continue;
+                if (snake.positions.slice(1).some(p => p[0] === newX && p[1] === newY)) continue;
+                safe.push(dir);
+            }
+            return safe.length > 0 ? safe : [snake.direction];
+        }
+
+        // Render the game state
+        function render() {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw food with label
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    if (grid[y][x] === -1) {
+                        ctx.fillStyle = 'yellow';
+                        ctx.fillRect(x * tileSize, y * tileSize, tileSize - 1, tileSize - 1);
+                        ctx.font = '8px Arial';
+                        ctx.fillStyle = 'black';
+                        ctx.fillText('food', x * tileSize + 2, y * tileSize + tileSize / 2 + 2);
+                    }
+                }
+            }
+
+            // Draw shots
+            ctx.fillStyle = 'black';
+            for (let shot of shots) {
+                ctx.fillRect(shot.position[0] * tileSize, shot.position[1] * tileSize, tileSize - 1, tileSize - 1);
+            }
+
+            // Draw snakes
+            for (let snake of snakes) {
+                ctx.fillStyle = snake.color;
+                for (let pos of snake.positions) {
+                    ctx.fillRect(pos[0] * tileSize, pos[1] * tileSize, tileSize - 1, tileSize - 1);
+                }
+            }
+        }
+
+        // Log events to the event log
+        function logEvent(message) {
+            const p = document.createElement('p');
+            p.textContent = message;
+            eventLog.appendChild(p);
+            eventLog.scrollTop = eventLog.scrollHeight; // Scroll to bottom
+        }
+
+        // Handle canvas click for selecting favorite snake
+        function handleCanvasClick(event) {
+            if (gameState !== 'selecting') return;
+            let rect = canvas.getBoundingClientRect();
+            let x = Math.floor((event.clientX - rect.left) / tileSize);
+            let y = Math.floor((event.clientY - rect.top) / tileSize);
+            for (let snake of snakes) {
+                for (let pos of snake.positions) {
+                    if (pos[0] === x && pos[1] === y) {
+                        userFavorite = snake.id;
+                        gameState = 'playing';
+                        lastLogicUpdateTime = performance.now(); // Initialize timing for logic updates
+                        logEvent(`You selected Snake ${snake.id}. Game started!`);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Add click listener to canvas
+        canvas.addEventListener('click', handleCanvasClick);
+
+        // Game loop using requestAnimationFrame for smooth rendering
+        function gameLoop(currentTime) {
+            if (gameState === 'playing') {
+                let deltaTime = currentTime - lastLogicUpdateTime;
+                while (deltaTime >= logicUpdateInterval) {
+                    updateLogic();
+                    deltaTime -= logicUpdateInterval;
+                }
+                lastLogicUpdateTime = currentTime - deltaTime;
+            }
+            render();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game
+        init();
+        requestAnimationFrame(gameLoop); // Start the rendering loop
+    </script>
+</body>
+</html>
